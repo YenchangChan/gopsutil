@@ -3,7 +3,7 @@ package disk
 import (
 	"encoding/json"
 
-	"github.com/shirou/gopsutil/internal/common"
+	"github.com/eoidc/gopsutil/internal/common"
 )
 
 var invoke common.Invoker
@@ -33,6 +33,8 @@ type PartitionStat struct {
 }
 
 type IOCountersStat struct {
+	Major            uint64 `json:"major"`
+	Minor            uint64 `json:"minor"`
 	ReadCount        uint64 `json:"readCount"`
 	MergedReadCount  uint64 `json:"mergedReadCount"`
 	WriteCount       uint64 `json:"writeCount"`

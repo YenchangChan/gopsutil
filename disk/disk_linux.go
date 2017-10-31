@@ -10,7 +10,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/shirou/gopsutil/internal/common"
+	"github.com/eoidc/gopsutil/internal/common"
 )
 
 const (
@@ -292,6 +292,16 @@ func IOCounters(names ...string) (map[string]IOCountersStat, error) {
 			continue
 		}
 
+		major, err := strconv.ParseUint((fields[0]), 10, 64)
+		if err != nil {
+			return ret, err
+		}
+
+		minor, err := strconv.ParseUint((fields[1]), 10, 64)
+		if err != nil {
+			return ret, err
+		}
+
 		reads, err := strconv.ParseUint((fields[3]), 10, 64)
 		if err != nil {
 			return ret, err
@@ -337,6 +347,8 @@ func IOCounters(names ...string) (map[string]IOCountersStat, error) {
 			return ret, err
 		}
 		d := IOCountersStat{
+			Major:            major,
+			Minor:            minor,
 			ReadBytes:        rbytes * SectorSize,
 			WriteBytes:       wbytes * SectorSize,
 			ReadCount:        reads,
