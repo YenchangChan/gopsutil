@@ -14,8 +14,143 @@ import (
 	"strings"
 	"syscall"
 
+	"unsafe"
+
 	"github.com/eoidc/gopsutil/internal/common"
 )
+
+const (
+	//defined in <link/sockios.h>
+	SIOCETHTOOL            = 0x8946
+	SIOCBONDINFOQUERY      = 0x8994
+	SIOCBONDSLAVEINFOQUERY = 0x8993
+
+	//defined in <link/ethtool.h>
+	ETHTOOL_GLINK = 0x0000000a //command of SIOCETHTOOL, used to get link stat
+
+	IFNAMSIZ = 16 //max length of interface anme defined in kernal
+)
+
+//defined like struct ifreq in if.h
+type ifReq struct {
+	ifr_name [IFNAMSIZ]byte
+	ifr_data uintptr
+}
+
+type ethtoolValue struct {
+	cmd  uint32
+	data uint32
+}
+
+//defined in <linux/if_bonding.h>
+//#define BOND_LINK_UP    0           /* link is up and running */
+//#define BOND_LINK_FAIL  1           /* link has just gone down */
+//#define BOND_LINK_DOWN  2           /* link has been down for too long time */
+//#define BOND_LINK_BACK  3           /* link is going back */
+//
+//#define BOND_STATE_ACTIVE       0   /* link is active */
+//#define BOND_STATE_BACKUP       1   /* link is backup */
+
+type ifBond struct {
+	bond_mode  int32
+	num_slaves int32
+	miimon     int32
+}
+
+type ifSlave struct {
+	slave_id           int32
+	slave_name         [IFNAMSIZ]byte
+	link               byte
+	state              byte
+	link_failure_count uint32
+}
+
+type slaveInfo struct {
+	name       string
+	linkStat   int
+	activeStat int
+}
+
+type bondInfo struct {
+	mode   int
+	slaves []slaveInfo
+}
+
+func cstrlen(bytes []byte) int {
+	var i int
+	for i := 0; i < len(bytes); i++ {
+		if int(bytes[i]) == 0 {
+			return i
+		}
+	}
+
+	return i
+}
+
+func getBondInfo(fd int, name string) (bondInfo, error) {
+	var namebyte [IFNAMSIZ]byte
+	var ep syscall.Errno
+	copy(namebyte[:], []byte(name))
+	bondinfo := ifBond{}
+	bond := bondInfo{}
+	bond.slaves = make([]slaveInfo, 0)
+
+	ifr := ifReq{
+		ifr_name: namebyte,
+		ifr_data: uintptr(unsafe.Pointer(&bondinfo)),
+	}
+
+	_, _, ep = syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), SIOCBONDINFOQUERY, uintptr(unsafe.Pointer(&ifr)))
+	if ep != 0 {
+		return bond, errors.New("Not a type of bond interface or unknow error")
+	}
+
+	bond.mode = int(bondinfo.bond_mode)
+
+	for i := 0; i < int(bondinfo.num_slaves); i++ {
+		slaveinfo := ifSlave{
+			slave_id: int32(i),
+		}
+
+		ifr.ifr_data = uintptr(unsafe.Pointer(&slaveinfo))
+		_, _, ep = syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), SIOCBONDSLAVEINFOQUERY, uintptr(unsafe.Pointer(&ifr)))
+		if ep == 0 {
+			slave := slaveInfo{}
+			slave.name = string(slaveinfo.slave_name[:cstrlen(slaveinfo.slave_name[:])])
+			slave.linkStat = int(slaveinfo.link)
+			slave.activeStat = int(slaveinfo.state)
+			bond.slaves = append(bond.slaves, slave)
+		}
+	}
+
+	return bond, nil
+}
+
+func getLinkStat(fd int, name string) int {
+	ev := ethtoolValue{
+		cmd: ETHTOOL_GLINK,
+	}
+
+	var namebyte [IFNAMSIZ]byte
+	copy(namebyte[:], []byte(name))
+
+	ifr := ifReq{
+		ifr_name: namebyte,
+		ifr_data: uintptr(unsafe.Pointer(&ev)),
+	}
+
+	_, _, ep := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), SIOCETHTOOL, uintptr(unsafe.Pointer(&ifr)))
+	if ep != 0 {
+		return LinkUnknow
+	}
+
+	if ev.data == 0 {
+		return LinkDown
+	} else {
+		return LinkUp
+	}
+
+}
 
 // NetIOCounters returnes network I/O statistics for every network
 // interface installed on the system.  If pernic argument is false,
@@ -38,6 +173,15 @@ func IOCountersByFile(pernic bool, filename string) ([]IOCountersStat, error) {
 	statlen := len(lines) - 1
 
 	ret := make([]IOCountersStat, 0, statlen)
+
+	//initial a socket for ioctl
+	fd, _, ep := syscall.RawSyscall(syscall.SYS_SOCKET, syscall.AF_INET, syscall.SOCK_DGRAM, syscall.IPPROTO_IP)
+	if ep == 0 {
+		defer syscall.Close(int(fd))
+	}
+
+	//the map is all the interface which are belong to bond
+	knownByBond := make(map[string]slaveInfo)
 
 	for _, line := range lines[2:] {
 		separatorPos := strings.LastIndex(line, ":")
@@ -107,7 +251,35 @@ func IOCountersByFile(pernic bool, filename string) ([]IOCountersStat, error) {
 			Dropout:     dropOut,
 			Fifoout:     fifoOut,
 		}
+
+		bond, err := getBondInfo(int(fd), interfaceName)
+		if err == nil {
+			nic.IsBond = true
+			for _, slave := range bond.slaves {
+				knownByBond[slave.name] = slave
+			}
+		}
+
 		ret = append(ret, nic)
+	}
+
+	for i := 0; i < len(ret); i++ {
+		if known, ok := knownByBond[ret[i].Name]; ok {
+			if known.linkStat == 0 {
+				ret[i].LinkStat = LinkUp
+			} else {
+				ret[i].LinkStat = LinkDown
+			}
+
+			if known.activeStat == 0 {
+				ret[i].ActiveStat = SlaveActive
+			} else {
+				ret[i].ActiveStat = SlaveInActive
+			}
+		} else {
+			ret[i].LinkStat = getLinkStat(int(fd), ret[i].Name)
+			ret[i].ActiveStat = 0
+		}
 	}
 
 	if pernic == false {

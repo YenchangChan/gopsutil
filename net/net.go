@@ -13,6 +13,18 @@ import (
 
 var invoke common.Invoker
 
+const (
+	LinkUnknow = iota
+	LinkUp
+	LinkDown
+)
+
+const (
+	SlaveNone = iota
+	SlaveActive
+	SlaveInActive
+)
+
 func init() {
 	invoke = common.Invoke{}
 }
@@ -29,7 +41,9 @@ type IOCountersStat struct {
 	Dropout     uint64 `json:"dropout"`     // total number of outgoing packets which were dropped (always 0 on OSX and BSD)
 	Fifoin      uint64 `json:"fifoin"`      // total number of FIFO buffers errors while receiving
 	Fifoout     uint64 `json:"fifoout"`     // total number of FIFO buffers errors while sending
-
+	LinkStat    int    `json:"linkStat"`    // link stat of the interface. const LinkXXX
+	ActiveStat  int    `json:"activeStat"`  //active stat of the interface, when it is used as a slave of a bond interface. SlaveXXX
+	IsBond      bool   `json:"isBond"`      //whether the interface is a type of bonding
 }
 
 // Addr is implemented compatibility to psutil
